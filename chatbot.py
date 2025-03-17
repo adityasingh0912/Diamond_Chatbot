@@ -8,7 +8,7 @@ from groq import Groq
 # Load environment variables
 load_dotenv()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-SOLR_URL = os.getenv("SOLR_URL", "http://192.168.1.11:8983/solr/")
+SOLR_URL = os.getenv("SOLR_URL")
 SOLR_COLLECTION_NAME = os.getenv("SOLR_COLLECTION_NAME", "diamond_core")
 
 # ------------------- Solr Client Initialization -------------------

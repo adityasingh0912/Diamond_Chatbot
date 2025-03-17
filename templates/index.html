@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
+    <title>Gemma - Your Diamond Guide</title>
+    <!-- FontAwesome for icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" />
+    <!-- Link to your CSS -->
+    <link rel="stylesheet" href="../static/style.css" />
+  </head>
+<body>
+  <div class="container">
+    <!-- Top Header -->
+    <div class="header">
+      <div class="header-avatar">
+        <i class="fas fa-dice-d20"></i>
+      </div>
+      <h1>Gemma - Your Diamond Guide</h1>
+      <p class="subheading">Find your perfect diamond</p>
+    </div>
+
+    <!-- Chat Container -->
+    <div class="chat-container">
+      <!-- Chat messages area -->
+      <div class="chat-messages" id="chatMessages">
+        <!-- Initial bot message -->
+        <div class="message bot-message">
+          <div class="avatar bot-avatar">
+            <i class="fas fa-gem"></i>
+          </div>
+          <div class="bubble bot-bubble">
+            <strong>Gemma</strong>: Hello! I'm Gemma, your diamond guru. How can I help you find the perfect diamond today?
+          </div>
+        </div>
+      </div>
+
+      <!-- Input container -->
+      <div class="input-container">
+        <input
+          type="text"
+          id="userInput"
+          placeholder="Ask about diamonds (e.g., 'Show me 1 carat round diamonds')"
+        />
+        <button class="send-button" id="sendButton">
+          <i class="fas fa-paper-plane"></i>
+        </button>
+      </div>
+    </div>
+
+    <!-- Search Results Bar -->
+    <div id="search-results-bar" class="search-results-bar"></div>
+    <!-- Add this after the search results bar -->
+    <div id="expert-recommendation" class="expert-recommendation hidden">
+      <div class="expert-header">
+        <i class="fas fa-award"></i>
+        <h3>My Recommendation</h3>
+      </div>
+      <div id="expert-content" class="expert-content"></div>
+    </div>
+  </div>
+  
+  <!-- Popup for style selection -->
+  <div id="stylePopup" class="popup-container">
+    <div class="popup-content">
+      <h3>Diamond Style Preference</h3>
+      <p>Choose your diamond type:</p>
+      <div class="style-buttons">
+        <button class="style-button labgrown" onclick="selectStyle('labgrown')">
+          <i class="fas fa-flask"></i> Lab Grown
+        </button>
+        <button class="style-button natural" onclick="selectStyle('natural')">
+          <i class="fas fa-gem"></i> Natural
+        </button>
+      </div>
+      <p class="popup-info">
+        Lab-grown: Eco-friendly &amp; budget-friendly<br />
+        Natural: Timeless and classic
+      </p>
+    </div>
+  </div>
+
+  <!-- Modal for Diamond Details -->
+  <div id="detailsModal" class="modal">   
+    <div class="modal-content">
+      <span class="close-button" onclick="closeModal()">&times;</span>
+      <div id="modalDetails"></div>
+    </div>
+  </div>
+
+  <!-- Main JS -->
+  <script src="../static/script.js"></script>
+</body>
+</html>

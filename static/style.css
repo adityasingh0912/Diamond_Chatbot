@@ -136,6 +136,26 @@ body {
   outline: none;
   border-color: #667eea;
 }
+.voiceButton {
+  background: #667eea;
+  color: #fff;
+  border: none;
+  width: 50px;
+  height: 50px;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.2s, background 0.3s;
+}
+
+.voiceButton:hover {
+  background: #764ba2;
+  transform: scale(1.05);
+}
+
 .send-button {
   background: #667eea;
   color: #fff;

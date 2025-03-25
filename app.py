@@ -2,6 +2,8 @@ from flask import Flask, render_template, request, jsonify
 import re
 import json
 import os
+import tempfile
+import logging
 from chatbot import diamond_chatbot, create_solr_client, extract_constraints_from_query
 from groq import Groq
 from dotenv import load_dotenv
@@ -120,6 +122,48 @@ def chat():
         return jsonify({
             'response': "I apologize, but I encountered an error. Please try your request again."
         }), 500
+
+@app.route('/speech-to-text', methods=['POST'])
+def speech_to_text():
+    try:
+        if 'audio' not in request.files:
+            logging.error("No audio file provided in request.")
+            return jsonify({"error": "No audio file provided"}), 400
+
+        audio_file = request.files['audio']
+
+        # Save the uploaded audio file to a secure temporary location
+        with tempfile.NamedTemporaryFile(suffix=".m4a", delete=False) as tmp:
+            audio_file.save(tmp.name)
+            tmp_path = tmp.name
+
+        # Use the Groq API to transcribe the audio with the finalized whisper-large-v3-turbo model
+        with open(tmp_path, "rb") as file:
+            transcription_response = client.audio.transcriptions.create(
+                file=(tmp_path, file.read()),
+                model="whisper-large-v3-turbo",
+                response_format="verbose_json",
+            )
+    
+        transcript = transcription_response.text.strip()
+
+        # Remove the temporary file immediately after transcription
+        try:
+            os.remove(tmp_path)
+        except Exception as remove_error:
+            logging.warning(f"Failed to remove temporary file {tmp_path}: {remove_error}")
+
+        # Log and return the transcript if available
+        if transcript:
+            logging.info("Audio transcription successful.")
+            return jsonify({"transcript": transcript})
+        else:
+            logging.error("Transcription returned empty result.")
+            return jsonify({"error": "Transcription failed, no transcript returned."}), 500
+
+    except Exception as e:
+        logging.exception("Error during speech-to-text processing:")
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
     app.run(debug=False, host='0.0.0.0', port=5505)

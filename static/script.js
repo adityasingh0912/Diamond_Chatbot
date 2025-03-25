@@ -137,15 +137,15 @@ function selectStyle(style) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message: newQuery })
     })
-    .then(res => res.json())
-    .then(data => {
-      addMessage(data.response, false);
-      handleDiamondData(data.response);
-    })
-    .catch(err => {
-      console.error("Error:", err);
-      addMessage("Sorry, there was an error processing your request.", false);
-    });
+      .then(res => res.json())
+      .then(data => {
+        addMessage(data.response, false);
+        handleDiamondData(data.response);
+      })
+      .catch(err => {
+        console.error("Error:", err);
+        addMessage("Sorry, there was an error processing your request.", false);
+      });
   }
   
   userInput.disabled = false;
@@ -196,9 +196,9 @@ function handleDiamondData(responseText) {
           <div>Clarity:<strong>${diamond.Clarity}</strong></div>
           <div>Color:<strong>${diamond.Color}</strong></div>
           <div>Cut:<strong>${diamond.Cut}</strong></div>
-          <div>Polish:<strong> ${diamond.Polish}</strong></div> 
-          <div>Symmetry:<strong> ${diamond.Symmetry}</strong></div>
-          <div>Style:<strong> ${diamond.Style}</strong></div>
+          <div>Polish:<strong>${diamond.Polish}</strong></div> 
+          <div>Symmetry:<strong>${diamond.Symmetry}</strong></div>
+          <div>Style:<strong>${diamond.Style}</strong></div>
         </div>
         <button class="view-details-btn" onclick='openModalWithDetails(${diamondObj})'>
           View Details
@@ -329,22 +329,101 @@ window.addEventListener('resize', function() {
   }
 });
 
-// Initialize responsive adjustments on page load
+/**
+ * Initialize responsive settings and voice recording on page load.
+ */
 document.addEventListener('DOMContentLoaded', function() {
-  // Set initial responsive settings
-  const windowWidth = window.innerWidth;
-  const windowHeight = window.innerHeight;
-  
-  // Adjust chat container based on screen size
   const chatMessages = document.getElementById("chatMessages");
   if (chatMessages) {
+    const windowHeight = window.innerHeight;
     if (windowHeight < 600) {
       chatMessages.style.maxHeight = "250px";
     } else if (windowHeight < 800) {
       chatMessages.style.maxHeight = "350px";
     }
   }
+
+  // Set up voice recording functionality
+  const voiceButton = document.getElementById("voiceButton");
+  const userInput = document.getElementById("userInput");
+  const sendButton = document.getElementById("sendButton");
+  const recordingIndicator = document.getElementById("recordingIndicator");
+
+  voiceButton.addEventListener("click", function () {
+      if (confirm("Would you like to record your voice message?")) {
+          startRecording();
+      }
+  });
+
+  let mediaRecorder;
+  let audioChunks = [];
+
+  function startRecording() {
+      if (recordingIndicator) {
+          recordingIndicator.style.display = "block";
+      }
+
+      navigator.mediaDevices.getUserMedia({ audio: true })
+          .then(stream => {
+              mediaRecorder = new MediaRecorder(stream);
+              audioChunks = [];
+              mediaRecorder.start();
+
+              mediaRecorder.addEventListener("dataavailable", event => {
+                  audioChunks.push(event.data);
+              });
+
+              mediaRecorder.addEventListener("stop", () => {
+                  if (recordingIndicator) {
+                      recordingIndicator.style.display = "none";
+                  }
+                  const audioBlob = new Blob(audioChunks, { type: "audio/webm" });
+                  sendAudioForTranscription(audioBlob);
+              });
+
+              // Record for 7.5 seconds; adjust as needed
+              setTimeout(() => {
+                  if (mediaRecorder && mediaRecorder.state !== "inactive") {
+                      mediaRecorder.stop();
+                  }
+              }, 7500);
+          })
+          .catch(err => {
+              console.error("Error accessing microphone:", err);
+              alert("Microphone access is required for voice input.");
+          });
+  }
+
+  function sendAudioForTranscription(audioBlob) {
+      let formData = new FormData();
+      formData.append("audio", audioBlob, "recording.webm");
+
+      fetch("/speech-to-text", {
+          method: "POST",
+          body: formData
+      })
+      .then(response => {
+          if (!response.ok) {
+              throw new Error("Transcription service error.");
+          }
+          return response.json();
+      })
+      .then(data => {
+          if (data.transcript) {
+              userInput.value = data.transcript;
+              sendButton.click();
+          } else {
+              console.error("Transcript not returned:", data);
+              alert("Could not transcribe your voice message. Please try again.");
+          }
+      })
+      .catch(err => {
+          console.error("Error during transcription:", err);
+          alert("There was an error processing your voice input.");
+      });
+  }
 });
+
 /**
  * Send user message to server.
  */

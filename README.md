@@ -125,17 +125,13 @@ Welcome to **Gemma v2** – the next-generation version of our AI-powered diamon
 Gemma/
 │── app.py                    # Flask application entry point
 │── chatbot.py                # Enhanced chatbot logic and recommendation engine
-│── solr_update.py            # Script to update Solr with diamond data and multimedia
 │── templates/
 │   ├── index.html            # Web-based chat interface with multimedia support
 │── static/
 │   ├── script.js             # Frontend JavaScript with multimedia modal handling
 │   ├── style.css             # Updated CSS with responsive design
-│── diamonds.csv              # Raw diamond dataset
-│── diamond_dataframe.csv     # Processed diamond data with multimedia references
 │── requirements.txt          # Required dependencies
 │── README.md                 # This README file for v2 branch
-│── .gitignore                # Git ignored files
 ```
 
 ---

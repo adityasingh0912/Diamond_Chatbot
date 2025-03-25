@@ -1,6 +1,7 @@
 import re
 import json
 import os
+import random
 from dotenv import load_dotenv
 import pysolr
 from groq import Groq
@@ -8,27 +9,95 @@ from groq import Groq
 # Load environment variables
 load_dotenv()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-SOLR_URL = os.getenv("SOLR_URL")
-SOLR_COLLECTION_NAME = os.getenv("SOLR_COLLECTION_NAME", "diamond_core")
+# if groq_api_keys_str:
+#     groq_api_keys = [key.strip() for key in groq_api_keys_str.split(",")]
+#     GROQ_API_KEY = random.choice(groq_api_keys)
+# else:
+#     GROQ_API_KEY = None
+#     print("No API key found")
 
-# ------------------- Solr Client Initialization -------------------
-def create_solr_client():
+SOLR_URL = os.getenv("SOLR_URL")
+SOLR_COLLECTION_NAME = os.getenv("SOLR_COLLECTION_NAME")
+
+# ------------------- Solr Client Initialization -------------------    
+def create_solr_client():                               
     return pysolr.Solr(f'{SOLR_URL}{SOLR_COLLECTION_NAME}', always_commit=False, timeout=10)
 
 solr_client = create_solr_client()
 
+
+# ------------------- Misspelling Correction and Preprocessing -------------------
+COMMON_MISSPELLINGS = {
+    "vvs1": "VVS1", "vvs2": "VVS2", "vs1": "VS1", "vs2": "VS2", "si1": "SI1", "si2": "SI2",
+    "vvs": "VVS1", "vs": "VS1", "si": "SI1",
+    "eye clean": "VS2",
+    "colorless": "D", "near colorless": "G", "faint yellow": "K",
+    "excellent": "EX", "very good": "VG", "good": "GD", "fair": "F", "poor": "P",
+    "none": "NON", "faint": "FNT", "medium": "MED", "strong": "STG",
+    "round brilliant": "ROUND", "princess cut": "PRINCESS", "emerald cut": "EMERALD",
+    "igi certificate": "IGI", "gia certificate": "GIA", "gia cert": "GIA", "igi cert": "IGI",
+    "lab": "lab", "laboratory": "lab", "labgrown": "lab", "lab-grown": "lab", "lab grown": "lab",
+    "nat": "natural", "naturally": "natural", "mined": "natural", "earth": "natural", 
+    "karat": "carat", "carrat": "carat", "karrat": "carat", "carrot": "carat",
+    "clarity": "Clarity", "colour": "Color", "kolor": "Color",
+    "symetry": "Symmetry", "symmetri": "Symmetry",
+    "polished": "Polish", "florescence": "Fluorescence", "flouresence": "Fluorescence",
+    "flourescence": "Fluorescence", "floressence": "Fluorescence",
+    "usd": "$", "dollars": "$", "dollar": "$", "price": "budget", "cost": "budget",
+    "thousand": "1000", "thousands": "1000", "grand": "1000"
+}
+# ------------------- Price Conversion Utility -------------------
 def convert_price_str(price_str):
     """ Converts '10k' -> 10000, '2.5k' -> 2500, and removes commas """
-    price_str = price_str.lower().replace(',', '')  # Remove commas (e.g., "10,000" -> "10000")
-    match = re.match(r'(\d+(?:\.\d+)?)\s*[kK]', price_str)  # Match "10k" or "2.5k"
+    price_str = price_str.lower().replace(',', '').replace('$', '')
+    match = re.match(r'(\d+(?:\.\d+)?)\s*[kK]', price_str)
     if match:
-        return int(float(match.group(1)) * 1000)  # Convert to integer dollars
-    return float(price_str)  # Otherwise, return as number
+        return int(float(match.group(1)) * 1000)
+    return float(price_str)
+
+def correct_misspellings(query):
+    corrected_query = query
+    for misspelling, correction in COMMON_MISSPELLINGS.items():
+        corrected_query = re.sub(r'\b' + re.escape(misspelling) + r'\b', correction, corrected_query, flags=re.IGNORECASE)
+    return corrected_query
+def preprocess_query(query):
+    cleaned_query = query.lower()
+    cleaned_query = re.sub(r'\s+', ' ', cleaned_query)
+    cleaned_query = cleaned_query.replace('w/', 'with').replace('w/o', 'without')
+    cleaned_query = correct_misspellings(cleaned_query)
+    # Handle metric conversion (e.g., "5 mm")
+    mm_match = re.search(r'(\d+(?:\.\d+)?)\s*mm', cleaned_query)
+    if mm_match:
+        mm_value = float(mm_match.group(1))
+        cleaned_query += f" with dimension {mm_value} millimeters"
+    return cleaned_query
 
 # ------------------- Utility: Extract Constraints from Query -------------------
 def extract_constraints_from_query(user_query):
+    processed_query = preprocess_query(user_query)
     constraints = {}
     query_lower = user_query.lower()
+    
+    # ----- Diamond Industry Shorthand Terminology -----
+    shorthand_mapping = {
+        "3x none": {"Cut": "EX", "Polish": "EX", "Symmetry": "EX", "Flo": "NON"},
+        "3x": {"Cut": "EX", "Polish": "EX", "Symmetry": "EX"},
+        "3ex none": {"Cut": "EX", "Polish": "EX", "Symmetry": "EX", "Flo": "NON"},
+        "3ex": {"Cut": "EX", "Polish": "EX", "Symmetry": "EX"},
+        "vg+": {"Cut": "VG", "Polish": "EX", "Symmetry": "EX"},
+        "g+": {"Cut": "G", "Polish": "VG", "Symmetry": "VG"},
+        "triple ex": {"Cut": "EX", "Polish": "EX", "Symmetry": "EX"},
+        "triple excellent": {"Cut": "EX", "Polish": "EX", "Symmetry": "EX"},
+        "ideal cut": {"Cut": "ID"},
+        "super ideal": {"Cut": "ID", "Polish": "EX", "Symmetry": "EX"},
+        "hearts and arrows": {"Cut": "ID", "Polish": "EX", "Symmetry": "EX"}
+    }
+    
+    for term, attributes in shorthand_mapping.items():
+        if re.search(r'\b' + re.escape(term) + r'\b', query_lower):
+            for attr, value in attributes.items():
+                constraints[attr] = value
+            break
     
     # ----- Style -----
     style_mapping = {
@@ -37,80 +106,111 @@ def extract_constraints_from_query(user_query):
         "lab": "lab",
         "natural": "natural",
         "ntural": "natural",
-        "natual": "natural"
+        "natual": "natural",
+        "nat": "natural"
     }
     for key, value in style_mapping.items():
         if key in query_lower:
             constraints["Style"] = value
             break
+    
     # (Existing style regex is kept if needed)
     style_match = re.search(r'\b(lab\s*grown|lab|natural)\b', user_query, re.IGNORECASE)
-    if style_match:
+    if style_match and "Style" not in constraints:
         style = style_match.group(1).lower()
         constraints["Style"] = "lab" if "lab" in style else "natural"
 
     # ----- Carat -----
-    # Capture carat range (e.g., "1.5 to 2 carats" or "1.5-2 ct")
-    carat_range_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:to|-)\s*(\d+(?:\.\d+)?)\s*(?:-?\s*carat[s]?|-?\s*ct[s]?|-?\s*crt|-?\s*carrat)\b', user_query, re.IGNORECASE)
-    if carat_range_match:
-        constraints["CaratLow"] = float(carat_range_match.group(1))
-        constraints["CaratHigh"] = float(carat_range_match.group(2))
-    else:
-        # Capture single carat values (e.g., "2.5 carats", "3 ct", "3-carat")
-        carat_match = re.search(r'(\d+(?:\.\d+)?)\s*(-?\s*carat[s]?|-?\s*ct[s]?|-?\s*crt|-?\s*carrat|-?\s*point[s]?|-?\s*pt)\b', user_query, re.IGNORECASE)
-        if carat_match:
-            constraints["Carat"] = float(carat_match.group(1))
-    
-    # ----- Budget / Price Range -----
-    price_range_match = re.search(
-        r'\b(?:between|bet|btw|betwen)\s*\$?(\d+(?:,\d+)?[kK]?)\s*(?:and|to|-)\s*\$?(\d+(?:,\d+)?[kK]?)',
-        user_query, re.IGNORECASE)
-    if price_range_match:
-        constraints["BudgetLow"] = convert_price_str(price_range_match.group(1))
-        constraints["BudgetHigh"] = convert_price_str(price_range_match.group(2))
-    else:
-        # Include "roughly" in the approximate price pattern.
-        approx_price_match = re.search(
-            r'\b(?:around|roughly|close to|approx|near|nearly|approximately)\s*\$?(\d+(?:,\d+)?[kK]?)',
-            user_query, re.IGNORECASE)
-        if approx_price_match:
-            constraints["BudgetTarget"] = convert_price_str(approx_price_match.group(1))
-        
-        # Unified extraction for phrases like "budget:" or "price:"
-        keyword_match = re.search(
-            r'\b(?:budget|price)[:\s]*\$?(\d+(?:,\d+)?[kK]?)',
-            user_query, re.IGNORECASE)
-        if keyword_match:
-            constraints["BudgetMax"] = convert_price_str(keyword_match.group(1))
-            # Remove any fallback Budget key to avoid conflicts.
-            constraints.pop("Budget", None)
-        else:
-            # Capture phrases like "min $3000" or "above $5000"
-            min_price_match = re.search(
-                r'\b(?:more than|above|over|at least|min(?:imum)?)\s*\$?(\d+(?:,\d+)?[kK]?)',
-                user_query, re.IGNORECASE)
-            if min_price_match:
-                constraints["BudgetMin"] = convert_price_str(min_price_match.group(1))
-            
-            # Capture phrases like "under $10k" or "less than $5000"
-            under_match = re.search(
-                r'\b(?:under|below|less than|max|max price|at most|upto|up to)\s*\$?(\d+(?:,\d+)?[kK]?)',
-                user_query, re.IGNORECASE)
-            if under_match:
-                constraints["Budget"] = convert_price_str(under_match.group(1))
-                constraints["BudgetStrict"] = True
-            else:
-                # Fallback: only capture numbers with a "$" (to avoid catching carat values)
-                budget_standalone_match = re.search(r'\$\s*(\d+(?:,\d+)?[kK]?)', user_query, re.IGNORECASE)
-                if budget_standalone_match and "BudgetMax" not in constraints and "Budget" not in constraints:
-                    constraints["BudgetMax"] = convert_price_str(budget_standalone_match.group(1))
+    carat_value_match = None
 
+    # Check for "less than" related carat constraints
+    less_than_carat_patterns = [
+        r'\b(?:under|below|less than|max|max price|at most|upto|up to|no more than|within|maximum|not exceeding)\s+(\d+(?:\.\d+)?)(?:\s*)?(?:carat[s]?|ct[s]?|crt|carrat)\b',
+    ]
+    for pattern in less_than_carat_patterns:
+        match = re.search(pattern, query_lower, re.IGNORECASE)
+        if match:
+            constraints["CaratHigh"] = float(match.group(1))
+            carat_value_match = match
+            break
 
-    under_match = re.search(r'\b(?:under|below|less than)\s*\$?(\d+(?:,\d+)?[kK]?)', query_lower, re.IGNORECASE)
-    if under_match:
-        price_str = under_match.group(1).replace(',', '')
-        constraints["Budget"] = convert_price_str(price_str)
-        constraints["BudgetStrict"] = True
+    # Check for "more than" related carat constraints
+    more_than_carat_patterns = [
+        r'\b(?:more than|above|over|at least|min(?:imum)?|starting at|from)\s+(\d+(?:\.\d+)?)(?:\s*)?(?:carat[s]?|ct[s]?|crt|carrat)\b',
+    ]
+    for pattern in more_than_carat_patterns:
+        match = re.search(pattern, query_lower, re.IGNORECASE)
+        if match:
+            constraints["CaratLow"] = float(match.group(1))
+            carat_value_match = match
+            break
+
+    carat_patterns = [
+        # Range pattern: matches "2 ct and 4 ct", "2ct to 4ct", or "2ct-4ct"
+        r'(\d+(?:\.\d+)?)(?:\s*)?(?:to|-|and)(?:\s*)?(\d+(?:\.\d+)?)(?:\s*)?(?:carat[s]?|ct[s]?|crt|carrat)\b',
+        # Single value pattern: matches "4 ct" or "4ct"
+        r'(\d+(?:\.\d+)?)(?:\s*)?(?:carat[s]?|ct[s]?|crt|carrat)\b'
+    ]
+
+    if carat_value_match is None:
+        for pattern in carat_patterns:
+            match = re.search(pattern, query_lower, re.IGNORECASE)
+            if match:
+                carat_value_match = match
+                if match.lastindex >= 2 and re.fullmatch(r'\d+(?:\.\d+)?', match.group(2).strip()):
+                    constraints["CaratLow"] = float(match.group(1))
+                    constraints["CaratHigh"] = float(match.group(2))
+                else:
+                    constraints["Carat"] = float(match.group(1))
+                break
+
+    # Additional special phrase checks for common carat values
+    if carat_value_match is None:
+        if "one carat" in query_lower or "1 carat" in query_lower:
+            constraints["Carat"] = 1.0
+            carat_value_match = re.search(r'\b(?:one|1)\s+carat\b', query_lower, re.IGNORECASE)
+        elif "half carat" in query_lower or "0.5 carat" in query_lower or "0.5 ct" in query_lower:
+            constraints["Carat"] = 0.5
+            carat_value_match = re.search(r'\b(?:half|0\.5)\s+carat(?:s)?|0\.5\s+ct\b', query_lower, re.IGNORECASE)
+
+    # ----- Budget / Price Extraction -----
+    price_patterns = [
+        (r'\bprice\s+(?:range|btw)(?:\s*between)?\s*(?:\$)?(\d+(?:,\d+)?(?:\.\d+)?(?:[kK])?)(?:\$)?\s*(?:to|and|-)\s*(?:\$)?(\d+(?:,\d+)?(?:\.\d+)?(?:[kK])?)(?:\$)?',
+        lambda m: {"BudgetLow": convert_price_str(m.group(1)), "BudgetHigh": convert_price_str(m.group(2))}),
+        # Range extraction: e.g. "between $1,000 and $2k"
+        (r'\b(?:between|bet|btw|betwen)\s*\$?(\d+(?:,\d+)?[kK]?)\s*(?:and|to|-)\s*\$?(\d+(?:,\d+)?[kK]?)',
+        lambda m: {"BudgetLow": convert_price_str(m.group(1)), "BudgetHigh": convert_price_str(m.group(2))}),
+        # Approximate price: e.g. "around $1500"
+        (r'\b(?:around|roughly|close to|approx|near|nearly|approximately|about|circa)\s*\$?(\d+(?:,\d+)?[kK]?)',
+        lambda m: {"BudgetTarget": convert_price_str(m.group(1))}),
+        # Unified keyword extraction: e.g. "budget: $2000", "price: $2500", "cost: $3000"
+        (r'\b(?:budget|price|cost)[:\s]*\$?(\d+(?:,\d+)?[kK]?)',
+        lambda m: {"BudgetMax": convert_price_str(m.group(1))}),
+        # Minimum price: e.g. "at least $500", "more than $600", "starting at $700"
+        (r'\b(?:more than|above|over|at least|min(?:imum)?|starting at|from)\s*\$?(\d+(?:,\d+)?[kK]?)',
+        lambda m: {"BudgetMin": convert_price_str(m.group(1))}),
+        # Under price: e.g. "under $1000", "below $900", "not exceeding $800"
+        (r'\b(?:under|below|less than|max|max price|at most|upto|up to|no more than|within|maximum|not exceeding)\s*\$?(?P<price>\d+(?:,\d+)?[kK]?)(?!\s*(?:carat|ct|crt|carrat))\b',
+        lambda m: {"Budget": convert_price_str(m.group("price")), "BudgetStrict": True}),
+        # Fallback: capture any "$" value (used only if nothing else matched)
+        (r'\$\s*(\d+(?:,\d+)?[kK]?)',
+        lambda m: {"BudgetMax": convert_price_str(m.group(1))})
+    ]
+
+    # Process the patterns in order and update constraints with the first successful match.
+    for pattern, action in price_patterns:
+        price_match = re.search(pattern, query_lower, re.IGNORECASE)
+        # Check if this match overlaps with the already found carat value
+        if price_match and (carat_value_match is None or (price_match.start() >= carat_value_match.end() or price_match.end() <= carat_value_match.start())):
+            constraints.update(action(price_match))
+            break
+
+    # Additional fallback: if no pattern matched and we haven't set any budget keys, try again with the raw query.
+    if not any(key in constraints for key in ["BudgetLow", "BudgetHigh", "BudgetTarget", "BudgetMax", "BudgetMin", "Budget"]):
+        budget_standalone_match = re.search(r'\$\s*(\d+(?:,\d+)?[kK]?)', user_query, re.IGNORECASE)
+        if budget_standalone_match and (carat_value_match is None or (budget_standalone_match.start() >= carat_value_match.end() or budget_standalone_match.end() <= carat_value_match.start())):
+            constraints["BudgetMax"] = convert_price_str(budget_standalone_match.group(1))
+
 
     # ----- Color -----
     color_mapping = {
@@ -134,69 +234,142 @@ def extract_constraints_from_query(user_query):
             found_color = True
             break
     if not found_color:
-        simple_color_match = re.search(r'\b([defghijklmn])(?:\s*grade|\s*color|\s*gia)?\b', user_query, re.IGNORECASE)
+        simple_color_match = re.search(r'\b([defghijklmn])\s*(?:color|grade|gia)\b', user_query, re.IGNORECASE)
+        if not simple_color_match:
+            simple_color_match = re.search(r'\b(?:color|grade|gia)\s*([defghijklmn])\b', user_query, re.IGNORECASE)
         if simple_color_match:
             constraints["Color"] = simple_color_match.group(1).lower()
 
+    
+    # ----- Color Range -----
+    color_range_match = re.search(r'\bcolors?\s+(?:between|from|range)?\s+([defghijklmn])\s+(?:to|and|through|[-])\s+([defghijklmn])', query_lower)
+    if color_range_match:
+        color_ordering = ["D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N"]
+        start = color_range_match.group(1).upper()
+        end = color_range_match.group(2).upper()
+        start_idx = color_ordering.index(start)
+        end_idx = color_ordering.index(end)
+        # Ensure proper order - D is better than N
+        if start_idx <= end_idx:
+            constraints["ColorRange"] = color_ordering[start_idx:end_idx+1]
+        else:
+            constraints["ColorRange"] = color_ordering[end_idx:start_idx+1]
+
+    # ----- Clarity -----
     clarity_match = re.search(r'\b(if|vvs1|vvs2|vs1|vs2|si1|si2)\b', user_query, re.IGNORECASE)
-    if clarity_match:
+    if clarity_match:   
         constraints["Clarity"] = clarity_match.group(1).upper()
     
+    # ----- Clarity Range -----
+    clarity_range_match = re.search(r'\bclarity\s+(?:between|from|range)?\s+(if|vvs1|vvs2|vs1|vs2|si1|si2)\s+(?:to|and|through|[-])\s+(if|vvs1|vvs2|vs1|vs2|si1|si2)', query_lower)
+    if clarity_range_match:
+        clarity_ordering = ["IF", "VVS1", "VVS2", "VS1", "VS2", "SI1", "SI2"]
+        start = clarity_range_match.group(1).upper()
+        end = clarity_range_match.group(2).upper()
+        start_idx = clarity_ordering.index(start)
+        end_idx = clarity_ordering.index(end)
+        # Ensure proper order - IF is better than SI2
+        if start_idx <= end_idx:
+            constraints["ClarityRange"] = clarity_ordering[start_idx:end_idx+1]
+        else:
+            constraints["ClarityRange"] = clarity_ordering[end_idx:start_idx+1]
+    
+    # ----- Cut, Polish, Symmetry Quality -----
     quality_mapping = {
-        "ex": "ex",
-        "excellent": "ex",
-        "id": "id",
-        "ideal": "id",
-        "vg": "vg",
-        "very good": "vg",
-        "good": "vg",
-        "gd": "gd",
-        "f": "f",
-        "p": "p",
-        "fr": "fr"
+        "ex": "EX",
+        "excellent": "EX",
+        "id": "ID",
+        "ideal": "ID",
+        "vg": "VG",
+        "very good": "VG",
+        "good": "GD",
+        "gd": "GD",
+        "f": "F",
+        "p": "P",
+        "fr": "FR"
     }
-    quality_pattern_cut_polish = r'(?:{attr}\s*(?:is\s*)?((?:ex|excellent|id|ideal|vg|very good|good|gd|f|p)))|(?:(?:(ex|excellent|id|ideal|vg|very good|good|gd|f|p))\s*{attr})'
-    quality_pattern_symmetry = r'(?:symmetry\s*(?:is\s*)?((?:ex|excellent|id|ideal|vg|very good|good|gd|f|p|fr)))|(?:(?:(ex|excellent|id|ideal|vg|very good|good|gd|f|p|fr))\s*symmetry)'
+    quality_pattern_cut_polish = r'(?:\b{attr}\b\s*(?:is\s*)?((?:ex|excellent|id|ideal|vg|very good|good|gd|f|p)))|(?:(?:(ex|excellent|id|ideal|vg|very good|good|gd|f|p))\s+\b{attr}\b)'
 
-    cut_regex = quality_pattern_cut_polish.format(attr='cut')
-    cut_match = re.search(cut_regex, user_query, re.IGNORECASE)
-    if cut_match:
-        quality = (cut_match.group(1) or cut_match.group(2)).lower()
-        constraints["Cut"] = quality_mapping.get(quality, quality)
+    quality_pattern_symmetry = r'(?:\bsymmetry\b\s*(?:is\s*)?((?:ex|excellent|id|ideal|vg|very good|good|gd|f|p|fr)))|(?:(?:(ex|excellent|id|ideal|vg|very good|good|gd|f|p|fr))\s+\bsymmetry\b)'
 
-    polish_regex = quality_pattern_cut_polish.format(attr='polish')
-    polish_match = re.search(polish_regex, user_query, re.IGNORECASE)
-    if polish_match:
-        quality = (polish_match.group(1) or polish_match.group(2)).lower()
-        constraints["Polish"] = quality_mapping.get(quality, quality)
+    # If not already set by shorthand notation
+    if "Cut" not in constraints:
+        cut_regex = quality_pattern_cut_polish.format(attr='cut')
+        cut_match = re.search(cut_regex, user_query, re.IGNORECASE)
+        if cut_match:
+            quality = (cut_match.group(1) or cut_match.group(2)).lower()
+            constraints["Cut"] = quality_mapping.get(quality, quality)
 
-    symmetry_match = re.search(quality_pattern_symmetry, user_query, re.IGNORECASE)
-    if symmetry_match:
-        quality = (symmetry_match.group(1) or symmetry_match.group(2)).lower()
-        constraints["Symmetry"] = quality_mapping.get(quality, quality)
+    # If not already set by shorthand notation
+    if "Polish" not in constraints:
+        polish_regex = quality_pattern_cut_polish.format(attr='polish')
+        polish_match = re.search(polish_regex, user_query, re.IGNORECASE)
+        if polish_match:
+            quality = (polish_match.group(1) or polish_match.group(2)).lower()
+            constraints["Polish"] = quality_mapping.get(quality, quality)
+
+    # If not already set by shorthand notation
+    if "Symmetry" not in constraints:
+        symmetry_match = re.search(quality_pattern_symmetry, user_query, re.IGNORECASE)
+        if symmetry_match:
+            quality = (symmetry_match.group(1) or symmetry_match.group(2)).lower()
+            constraints["Symmetry"] = quality_mapping.get(quality, quality)
 
     # ----- Fluorescence (Flo) -----
     flo_mapping = {
-        "no fluorescence": "non",
-        "none": "non",
-        "faint": "fnt",
-        "medium": "med",
-        "very slight": "vsl",
-        "slight": "slt",
-        "strong": "stg",
-        "very strong": "vst"
+        "no fluorescence": "NON",
+        "none": "NON",
+        "fnt": "FNT",        
+        "faint": "FNT",      
+        "medium": "MED",
+        "very slight": "VSL",
+        "slight": "SLT",
+        "strong": "STG",
+        "very strong": "VST"
     }
-    for key, value in flo_mapping.items():
-        if key in query_lower:
-            constraints["Flo"] = value
-            break
+    # Many ifs due to shorthand notation
+    if "Flo" not in constraints:  # Don't override if set by shorthand
+        for key, value in flo_mapping.items():
+            if key in query_lower:
+                constraints["Flo"] = value
+                break
+
+    # ----- Negative Fluorescence Preferences -----
+    if "no fluorescence" in query_lower or "none fluorescence" in query_lower or "without fluorescence" in query_lower:
+        constraints["Flo"] = "NON"
+    
+    # # Check for negative inputs
+    # negative_patterns = [
+    #     r'\b(?:don\'t|do not|not|no|avoid)\s+(?:want|need|like|show|include)\s+(?:any\s+)?([a-z\s]+)',
+    #     r'\b(?:exclude|without|except)\s+([a-z\s]+)'
+    # ]
+
+    # for pattern in negative_patterns:
+    #     matches = re.finditer(pattern, query_lower)
+    #     for match in matches:
+    #         feature = match.group(1).strip()
+    #         # Map feature to appropriate exclusion
+    #         if "fluorescence" in feature or "fluo" in feature:
+    #             constraints["ExcludeFlo"] = ["STG", "VST", "MED"]
+    #         elif "inclusion" in feature:
+    #             constraints["ExcludeClarity"] = ["SI1", "SI2"]
+    #         elif "si1" in feature:
+    #             constraints["ExcludeClarity"] = ["SI1"]
+    #         elif "si2" in feature:
+    #             constraints["ExcludeClarity"] = ["SI2"]
 
     # ----- Lab -----
     lab_options = ['igi', 'gia', 'gcal', 'none', 'gsi', 'hrd', 'sgl', 'other', 'egl', 'ags', 'dbiod']
     for lab in lab_options:
         if re.search(r'\b' + re.escape(lab) + r'\b', query_lower):
-            constraints["Lab"] = lab
+            constraints["Lab"] = lab.upper()
             break
+
+    # # ----- GIA Report Number -----
+    # report_match = re.search(r'\b(?:gia|report|certificate)\s*(?:number|#|no)?[:\s]*(\d{10})\b', query_lower)
+    # if report_match:
+    #     report_number = report_match.group(1)
+    #     constraints["ReportNumber"] = report_number
 
     # ----- Shape -----
     shape_options = [
@@ -212,8 +385,29 @@ def extract_constraints_from_query(user_query):
     shape_options = sorted([s.lower() for s in shape_options], key=len, reverse=True)
     for shape in shape_options:
         if re.search(r'\b' + re.escape(shape) + r'\b', query_lower):
-            constraints["Shape"] = shape
+            constraints["Shape"] = shape.upper()
             break
+
+    # # ----- Ratio and Proportions -----
+    # ratio_match = re.search(r'\bratio\s*(?:of)?\s*(\d+(?:\.\d+)?)\s*(?::|to)\s*(\d+(?:\.\d+)?)', query_lower)
+    # if ratio_match:
+    #     ratio_val = float(ratio_match.group(1)) / float(ratio_match.group(2))
+    #     constraints["Ratio"] = ratio_val
+    #     constraints["RatioTolerance"] = 0.1  # 10% tolerance
+
+    # # ----- Depth Percentage -----
+    # depth_match = re.search(r'\bdepth\s*(?:percentage|percent|\%)\s*(?:of)?\s*(\d+(?:\.\d+)?)', query_lower)
+    # if depth_match:
+    #     depth_val = float(depth_match.group(1))
+    #     constraints["DepthPercentage"] = depth_val
+    #     constraints["DepthTolerance"] = 1.0  # 1% tolerance
+
+    # # ----- Table Percentage -----
+    # table_match = re.search(r'\btable\s*(?:percentage|percent|\%)\s*(?:of)?\s*(\d+(?:\.\d+)?)', query_lower)
+    # if table_match:
+    #     table_val = float(table_match.group(1))
+    #     constraints["TablePercentage"] = table_val
+    #     constraints["TableTolerance"] = 1.0  # 1% tolerance
 
     # ----- Price Ordering Preference (if no explicit budget) -----
     if "Budget" not in constraints:
@@ -235,80 +429,144 @@ def direct_solr_search(user_query, solr_client, top_k=10):
     filter_queries = []
     sort_fields = []  # Sorting priorities
 
+    # # Check if there's a report number search (this would override other constraints)
+    # if "ReportNumber" in constraints:
+    #     report_number = constraints["ReportNumber"]
+    #     base_query = f"ReportNumber:{report_number}"
+    #     query_params = {
+    #         "q": base_query,
+    #         "fl": "Carat,Clarity,Color,Cut,Shape,Price,Style,Polish,Symmetry,Lab,Flo,Width,Height,Length,Depth,pdf,image,video",
+    #         "rows": top_k
+    #     }
+    #     try:
+    #         results = solr_client.search(**query_params)
+    #         return results.docs
+    #     except Exception as e:
+    #         print(f"Solr search error: {e}")
+    #         return []
+
     # ------------------ Style Filtering ------------------
     if "Style" in constraints:
         style_value = constraints["Style"].lower()
         filter_queries.append(f"Style:({style_value})")
 
     # ------------------ Carat Filtering ------------------
-    if "Carat" in constraints:
+    if "CaratLow" in constraints and "CaratHigh" in constraints:
+        filter_queries.append(f"Carat:[{constraints['CaratLow']} TO {constraints['CaratHigh']}]")
+    elif "Carat" in constraints:
         carat_val = constraints["Carat"]
         tolerance = 0.05 * carat_val  # ±5% tolerance
         filter_queries.append(f"Carat:[{carat_val - tolerance} TO {carat_val + tolerance}]")
-    if "CaratLow" in constraints and "CaratHigh" in constraints:
-        filter_queries.append(f"Carat:[{constraints['CaratLow']} TO {constraints['CaratHigh']}]")
 
     # ------------------ Price Filtering & Sorting ------------------
     if "BudgetMax" in constraints:
         budget_max = constraints["BudgetMax"]
-        min_price = max(0.7 * budget_max, 5000)  # Avoid very cheap diamonds
-        relaxed_max = budget_max * 1.15  # Allow up to 15% higher-priced suggestions
-        filter_queries.append(f"Price:[{min_price} TO {relaxed_max}]")
-        sort_fields.insert(0, f"abs(sub(Price,{budget_max})) asc")  # Prioritize closest to budget
+        # Define a narrow band: from 90% of budget_max up to the budget_max.
+        narrow_lower_bound = max(100, budget_max * 0.9)  # Ensure a reasonable minimum
+        filter_queries.append(f"Price:[{narrow_lower_bound} TO {budget_max}]")
+        sort_fields.insert(0, f"abs(sub(Price,{budget_max})) asc")
 
     elif "BudgetMin" in constraints:
         budget_min = constraints["BudgetMin"]
-        relaxed_min = max(0.9 * budget_min, 4000)  # Allow 10% lower-priced options
+        # Allow a slightly lower floor for flexibility
+        relaxed_min = max(0.9 * budget_min, 100)  # Removed the 4000 limit
         filter_queries.append(f"Price:[{relaxed_min} TO *]")
-        sort_fields.insert(0, f"abs(sub(Price,{budget_min})) asc")  # Prioritize closest to budget
+        sort_fields.insert(0, f"abs(sub(Price,{budget_min})) asc")
 
     elif "BudgetStrict" in constraints and constraints["BudgetStrict"]:
         strict_budget = constraints["Budget"]
-        relaxed_max = strict_budget * 1.1  # Allow up to 10% over budget
+        relaxed_max = strict_budget * 1.05  # Allow up to 5% over budget (instead of 10%)
         filter_queries.append(f"Price:[* TO {relaxed_max}]")
-        sort_fields.insert(0, f"abs(sub(Price,{strict_budget})) asc")  # Prioritize closest to budget
+        sort_fields.insert(0, f"abs(sub(Price,{strict_budget})) asc")
 
     elif "BudgetLow" in constraints and "BudgetHigh" in constraints:
         budget_low = constraints["BudgetLow"]
         budget_high = constraints["BudgetHigh"]
-        relaxed_high = budget_high * 1.15  # Allow slightly above budget range
+        relaxed_high = budget_high * 1.1  # Allow slightly above budget range (10% buffer)
         filter_queries.append(f"Price:[{budget_low} TO {relaxed_high}]")
         target_price = (budget_low + budget_high) / 2
-        sort_fields.insert(0, f"abs(sub(Price,{target_price})) asc")  # Prioritize closest to budget range
+        sort_fields.insert(0, f"abs(sub(Price,{target_price})) asc")
 
     elif "BudgetTarget" in constraints:
         target_price = constraints["BudgetTarget"]
-        tolerance = max(0.15 * target_price, 1000)  # ±15% or at least ±$1000
-        relaxed_high = target_price * 1.15  # Allow up to 15% higher suggestions
+        tolerance = max(0.15 * target_price, 500)  # Reduced tolerance (±15% or min $500)
+        relaxed_high = target_price * 1.1  # Allow up to 10% higher suggestions
         filter_queries.append(f"Price:[{target_price - tolerance} TO {relaxed_high}]")
-        sort_fields.insert(0, f"abs(sub(Price,{target_price})) asc")  # Prioritize closest to target
+        sort_fields.insert(0, f"abs(sub(Price,{target_price})) asc")
 
     elif "Budget" in constraints:
         budget = constraints["Budget"]
-        min_price = max(0.5 * budget, 1000)  # Ensure a reasonable minimum price
-        relaxed_max = budget * 1.15  # Allow up to 15% above budget
+        min_price = max(0, 0.5 * budget)  # Allow lower range instead of forcing 1000
+        relaxed_max = budget * 1.1  # Allow up to 10% above budget
         filter_queries.append(f"Price:[{min_price} TO {relaxed_max}]")
-        sort_fields.insert(0, f"abs(sub(Price,{budget})) asc")  # Prioritize closest to budget
+        sort_fields.insert(0, f"abs(sub(Price,{budget})) asc")
+
+    # Sorting override for cheapest or expensive requests
+    if any(word in user_query.lower() for word in ["cheapest", "lowest price", "affordable", "low budget", "least expensive"]):
+        constraints["PriceOrder"] = "asc"
+    elif any(word in user_query.lower() for word in ["most expensive", "highest price", "priciest", "expensive", "high budget", "max price"]):
+        constraints["PriceOrder"] = "desc"
+
 
     # ------------------ Clarity Filtering ------------------
     if "Clarity" in constraints:
         clarity_val = constraints["Clarity"]
         filter_queries.append(f"Clarity:({clarity_val.upper()})")
 
+    elif "ClarityRange" in constraints:
+        clarity_range = constraints["ClarityRange"]
+        filter_queries.append(f"Clarity:({' OR '.join(clarity_range)})")
+
+    # if "ExcludeClarity" in constraints:
+    #     exclude_clarity = constraints["ExcludeClarity"]
+    #     filter_queries.append(f"-Clarity:({' OR '.join(exclude_clarity)})")
+
     # ------------------ Color Filtering ------------------
     if "Color" in constraints:
         color_val = constraints["Color"]
         filter_queries.append(f"Color:({color_val.upper()})")
+    
+    elif "ColorRange" in constraints:
+        color_range = constraints["ColorRange"]
+        filter_queries.append(f"Color:({' OR '.join(color_range)})")
 
-    # ------------------ Cut Filtering ------------------
+    # ------------------ Cut, Polish, Symmetry Filtering ------------------
     if "Cut" in constraints:
         cut_val = constraints["Cut"]
         filter_queries.append(f"Cut:({cut_val.upper()})")
+
+    if "Polish" in constraints:
+        polish_val = constraints["Polish"]
+        filter_queries.append(f"Polish:({polish_val.upper()})")
+
+    if "Symmetry" in constraints:
+        symmetry_val = constraints["Symmetry"]
+        filter_queries.append(f"Symmetry:({symmetry_val.upper()})")
 
     # ------------------ Shape Filtering ------------------
     if "Shape" in constraints:
         shape_val = constraints["Shape"].upper()
         filter_queries.append(f"Shape:({shape_val})")
+
+    # ------------------ Fluorescence Filtering ------------------
+    if "Flo" in constraints:
+        filter_queries.append(f"Flo:({constraints['Flo']})")
+
+    # if "ExcludeFlo" in constraints:
+    #     exclude_flo = constraints["ExcludeFlo"]
+    #     filter_queries.append(f"-Flo:({' OR '.join(exclude_flo)})")
+
+    # ------------------ Lab Filtering ------------------
+    if "Lab" in constraints:
+        lab_val = constraints["Lab"]
+        filter_queries.append(f"Lab:({lab_val})")
+
+    # # ------------------ Ratio Filtering ------------------
+    # if "Ratio" in constraints:
+    #     ratio = constraints["Ratio"]
+    #     tolerance = constraints.get("RatioTolerance", 0.1)
+    #     # Calculate ratio field from dimensions if not directly stored
+    #     filter_queries.append(f"Ratio:[{ratio - tolerance} TO {ratio + tolerance}]")
 
     # ------------------ Solr Query Parameters ------------------
     query_params = {
@@ -319,9 +577,14 @@ def direct_solr_search(user_query, solr_client, top_k=10):
     }
 
     # ------------------ Sorting Priorities ------------------
-    if "Carat" in constraints:
-        target_carat = constraints["Carat"]
-        sort_fields.append(f"abs(sub(Carat,{target_carat})) asc")  # Sort closest to desired carat
+    if any(keyword in user_query.lower() for keyword in ["maximum carat", "max carat", "largest diamond", "biggest diamond"]):
+        sort_fields.insert(0, "Carat desc")  # Sort by largest carat first
+    
+    if "PriceOrder" in constraints:
+        if constraints["PriceOrder"] == "asc":
+            sort_fields.insert(0, "Price asc")
+        else:
+            sort_fields.insert(0, "Price desc")
 
     # Apply sorting if there are sort fields
     if sort_fields:
@@ -340,33 +603,10 @@ def direct_solr_search(user_query, solr_client, top_k=10):
 def generate_groq_response(user_query, relevant_data, client):
     prompt = f"""
 You are a friendly, expert diamond consultant with years of experience helping customers find the perfect diamond.
+User Query: "{user_query}"
 Your response should be personal, warm, and engaging. Provide an expert recommendation based on the customer's query.
-
-Please analyze the following diamond details and produce a JSON response that includes the top matching diamonds.
-Your response should include:
-1. A brief introductory paragraph (one or two sentences) in a conversational tone explaining what you found and why the top pick stands out.
-2. A special marker <diamond-data> immediately followed by a valid JSON array of diamond objects.
-3. Close with </diamond-data>.
-
-Each diamond object must include the following attributes:
-- Carat
-- Clarity
-- Color
-- Cut
-- Shape
-- Price
-- Style
-- Polish
-- Symmetry
-- Lab
-- Flo
-- Length
-- Height
-- Width
-- Depth
-- pdf
-- image
-- video
+Please analyze the following diamond details and give a very concise response. NOT LONGER THAN 3 SENTENCES.
+Your response should include: A brief introductory paragraph (one or two sentences) in a conversational tone explaining what you found and why the top pick stands out while comparing the user query with the recommended diamonds. If the recommendations do not exactly match the query (for example, in carat, fluorescence, or price), include a note explaining that exact matches were not available and describe why one of the alternatives might be better.
 
 Below are some diamond details:
 {relevant_data}
@@ -381,52 +621,24 @@ Make sure the JSON is valid and can be parsed by JavaScript's JSON.parse() funct
     )
     return chat_completion.choices[0].message.content
 
-def groq_response(user_query, diamond_data, groq_client):
-    prompt = f"""
-You are a friendly, expert diamond consultant with years of experience helping customers find the perfect diamond.
-Your response should be personal, warm, and engaging. Based on the customer's query and the diamond data provided, please do the following:
-1. Begin with an introductory paragraph that states how many diamonds were found for the query (e.g., "Found 3 Diamonds for '3 carat'").
-2. Provide a brief expert recommendation tailored for a 3-carat diamond—mentioning attributes like cut, color, and clarity.
-3. List each diamond recommendation on separate lines. For each diamond, display:
-   - Carat (e.g., "3.01 Carat")
-   - Clarity (e.g., "Clarity: SI1" or "Clarity: N/A" if not available)
-   - Color (e.g., "Color: G")
-   - Cut (e.g., "Cut: Excellent")
-   - Polish (or "N/A")
-   - Symmetry (or "N/A")
-   - Style (or "N/A")
-   - Price (formatted as currency, e.g., "$15,999")
-4. End each recommendation with "View Details".
-5. Enclose the list of diamond recommendations between the tags <diamond-data> and </diamond-data>.
-
-Customer Query: "{user_query}"
-
-Here is the diamond data in JSON for reference:
-{diamond_data}
-
-Please produce the final output as plain text following the above instructions.
-"""
-    response = groq_client.chat.completions.create(
-        messages=[{"role": "system", "content": prompt}],
-        model="qwen-2.5-32b",
-        temperature=0.7,
-        max_tokens=1500
-    )
-    return response.choices[0].message.content
-
-
 # ------------------- Main Chatbot Logic -------------------
 def diamond_chatbot(user_query, solr_client, client):
     if user_query.strip().lower() in ["hi", "hello"]:
-        return "Hey there! I'm your diamond guru 😎. Ready to help you find that perfect sparkle? Tell me what you're looking for!"
+        return "Hey there! I'm your diamond guru. Ready to help you find that perfect sparkle? Tell me what you're looking for!"
 
     constraints = extract_constraints_from_query(user_query)
+    
+    # -------------------- Debugging --------------------
+    # print("Extracted Constraints:", constraints)
+    # ---------------------------------------------------
     if not constraints and not any(keyword in user_query.lower() for keyword in ["maximum", "minimum", "lowest", "highest", "largest", "smallest"]):
         return "Hello! I'm your diamond assistant. Please let me know your preferred carat, clarity, color, cut, or budget so I can help you find the perfect diamond."
 
-    docs = direct_solr_search(user_query, solr_client, top_k=10)
+    docs = direct_solr_search(user_query, solr_client, top_k=100)
     if not docs:
         return "No matching diamonds found. Please try a different query."
+
+    random.shuffle(docs)  # Randomize the order of the retrieved documents
 
     top_5 = docs[:5]
     relevant_data_list = []
@@ -454,11 +666,14 @@ def diamond_chatbot(user_query, solr_client, client):
         relevant_data_list.append(diamond_info)
     relevant_data_json = json.dumps(relevant_data_list, indent=2)
 
+    # Groq response, comment out while debug to prevent api calls!
     groq_response = generate_groq_response(user_query, relevant_data_json, client)
-    return groq_response
+    diamond_data_response = f"<diamond-data>\n{relevant_data_json}\n</diamond-data>"
+    final_response = f"{groq_response}\n{diamond_data_response}"
+    return final_response
 
-def main():
-    client = Groq()
+def main(): 
+    client = Groq(api_key=GROQ_API_KEY)
     solr_client = create_solr_client()
 
     while True:

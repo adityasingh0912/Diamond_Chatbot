@@ -108,7 +108,8 @@ Welcome to **Gemma v2** – the next-generation version of our AI-powered diamon
   Updated HTML, CSS, and JavaScript ensure a seamless experience across devices.
 
 ---
-
+![HomePage](img1.png)
+![visuals](img2.png)
 ## ⚡ Key Technologies Used
 
 - **Flask:** Python web framework powering the application.
@@ -139,5 +140,5 @@ Gemma/
 ## ℹ️ Important Notice
 
 **Gemma v2** is intended for advanced users with access to a local Solr setup and proper multimedia resources. If you are looking for a quick-start clone-and-run version, please refer to the main branch.
-
+![File Structure](diagram.png)
 ---
